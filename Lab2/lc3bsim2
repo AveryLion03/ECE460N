@@ -548,7 +548,7 @@ void process_instruction(){
         
         case 0b0100: // JSR/JSRR
           // Store Incremented PC in R7
-            NEXT_LATCHES.REGS[7] = Low16bits(NEXT_LATCHES.PC);
+            int16_t temp = NEXT_LATCHES.PC;
             // printf("Expected Value: 0x%0.4x\nRegister Val: 0x%0.4x\n", NEXT_LATCHES.PC, NEXT_LATCHES.REGS[7]);
 
           // Register or offset:
@@ -567,6 +567,7 @@ void process_instruction(){
               pcOffset = Low16bits(((int16_t)pcOffset) << 1); // LSFH to make it multiple of 2
               NEXT_LATCHES.PC = Low16bits(NEXT_LATCHES.PC + pcOffset);
             }
+            NEXT_LATCHES.REGS[7] = Low16bits(temp);
           break;
           
         case 0b0010: // LDB
@@ -590,7 +591,11 @@ void process_instruction(){
               // printf("Memory Location: 0x%0.4x with values: 0x%0.4x%0.4x\n", effectiveAddress, MEMORY[effectiveAddress / 2][1], MEMORY[effectiveAddress / 2][0]);
               // printf("DR Value: 0x%0.4x at 0x%0.4x\n", drVal, effectiveAddress);
             }
-            // extend to 16 bits
+
+            // Sign-extend to 16 bits
+            if (drVal & 0x0080) { // Check if the sign bit (bit 7) is set
+                drVal |= 0xFF00; // Sign-extend to 16 bits
+            }
             drVal = Low16bits(drVal);
             NEXT_LATCHES.REGS[dr] = drVal;
             // printf("Expected Value: 0x%0.4x\nRegister Val: 0x%0.4x\n", drVal, NEXT_LATCHES.REGS[dr]);
@@ -793,13 +798,12 @@ void process_instruction(){
               break;
             }// 
             
-            pcOffset = (instruction & 0x003F);
+            pcOffset = (instruction & 0x003F) << 1;
             if (pcOffset & 0x0020) { // Check if the sign bit (bit 5) is set
                 pcOffset |= 0xFFC0; // Sign-extend to 16 bits
             }
             pcOffset = Low16bits((int16_t)pcOffset);
             effectiveAddress = Low16bits((pcOffset + sr2Val));
-
             MEMORY[effectiveAddress / 2][0] = (sr1Val & 0x00FF);
             MEMORY[effectiveAddress / 2][1] = (sr1Val & 0xFF00) >> 8;
             // printf("Memory Value (MSB): 0x%0.4x\nMemory Value (LSB): 0x%0.4x\n", MEMORY[effectiveAddress][1], MEMORY[effectiveAddress][0]);
