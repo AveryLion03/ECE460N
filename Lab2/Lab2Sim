@@ -1,0 +1,815 @@
+/*
+    Name 1: Avery Atchley
+*/
+
+/***************************************************************/
+/*                                                             */
+/*   LC-3b Instruction Level Simulator                         */
+/*                                                             */
+/*   EE 460N                                                   */
+/*   The University of Texas at Austin                         */
+/*                                                             */
+/***************************************************************/
+
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
+/***************************************************************/
+/*                                                             */
+/* Files: isaprogram   LC-3b machine language program file     */
+/*                                                             */
+/***************************************************************/
+
+/***************************************************************/
+/* These are the functions you'll have to write.               */
+/***************************************************************/
+
+void process_instruction();
+
+/***************************************************************/
+/* A couple of useful definitions.                             */
+/***************************************************************/
+#define FALSE 0
+#define TRUE  1
+
+/***************************************************************/
+/* Use this to avoid overflowing 16 bits on the bus.           */
+/***************************************************************/
+#define Low16bits(x) ((x) & 0xFFFF)
+
+/***************************************************************/
+/* Main memory.                                                */
+/***************************************************************/
+/* MEMORY[A][0] stores the least significant byte of word at word address A lsb
+   MEMORY[A][1] stores the most significant byte of word at word address A msb
+*/
+
+#define WORDS_IN_MEM    0x08000 
+int MEMORY[WORDS_IN_MEM][2];
+
+/***************************************************************/
+
+/***************************************************************/
+
+/***************************************************************/
+/* LC-3b State info.                                           */
+/***************************************************************/
+#define LC_3b_REGS 8
+
+int RUN_BIT;	/* run bit */
+
+
+typedef struct System_Latches_Struct{
+
+  int PC,		/* program counter */
+    N,		/* n condition bit */
+    Z,		/* z condition bit */
+    P;		/* p condition bit */
+  int REGS[LC_3b_REGS]; /* register file. */
+} System_Latches;
+
+/* Data Structure for Latch */
+
+System_Latches CURRENT_LATCHES, NEXT_LATCHES;
+
+/***************************************************************/
+/* A cycle counter.                                            */
+/***************************************************************/
+int INSTRUCTION_COUNT;
+
+/***************************************************************/
+/*                                                             */
+/* Procedure : help                                            */
+/*                                                             */
+/* Purpose   : Print out a list of commands                    */
+/*                                                             */
+/***************************************************************/
+void help() {                                                    
+  printf("----------------LC-3b ISIM Help-----------------------\n");
+  printf("go               -  run program to completion         \n");
+  printf("run n            -  execute program for n instructions\n");
+  printf("mdump low high   -  dump memory from low to high      \n");
+  printf("rdump            -  dump the register & bus values    \n");
+  printf("?                -  display this help menu            \n");
+  printf("quit             -  exit the program                  \n\n");
+}
+
+/***************************************************************/
+/*                                                             */
+/* Procedure : cycle                                           */
+/*                                                             */
+/* Purpose   : Execute a cycle                                 */
+/*                                                             */
+/***************************************************************/
+void cycle() {                                                
+
+  process_instruction();
+  CURRENT_LATCHES = NEXT_LATCHES;
+  INSTRUCTION_COUNT++;
+}
+
+/***************************************************************/
+/*                                                             */
+/* Procedure : run n                                           */
+/*                                                             */
+/* Purpose   : Simulate the LC-3b for n cycles                 */
+/*                                                             */
+/***************************************************************/
+void run(int num_cycles) {                                      
+  int i;
+
+  if (RUN_BIT == FALSE) {
+    printf("Can't simulate, Simulator is halted\n\n");
+    return;
+  }
+
+  printf("Simulating for %d cycles...\n\n", num_cycles);
+  for (i = 0; i < num_cycles; i++) {
+    if (CURRENT_LATCHES.PC == 0x0000) {
+	    RUN_BIT = FALSE;
+	    printf("Simulator halted\n\n");
+	    break;
+    }
+    cycle();
+  }
+}
+
+/***************************************************************/
+/*                                                             */
+/* Procedure : go                                              */
+/*                                                             */
+/* Purpose   : Simulate the LC-3b until HALTed                 */
+/*                                                             */
+/***************************************************************/
+void go() {                                                     
+  if (RUN_BIT == FALSE) {
+    printf("Can't simulate, Simulator is halted\n\n");
+    return;
+  }
+
+  printf("Simulating...\n\n");
+  while (CURRENT_LATCHES.PC != 0x0000)
+    cycle();
+  RUN_BIT = FALSE;
+  printf("Simulator halted\n\n");
+}
+
+/***************************************************************/ 
+/*                                                             */
+/* Procedure : mdump                                           */
+/*                                                             */
+/* Purpose   : Dump a word-aligned region of memory to the     */
+/*             output file.                                    */
+/*                                                             */
+/***************************************************************/
+void mdump(FILE * dumpsim_file, int start, int stop) {          
+  int address; /* this is a byte address */
+
+  printf("\nMemory content [0x%.4x..0x%.4x] :\n", start, stop);
+  printf("-------------------------------------\n");
+  for (address = (start >> 1); address <= (stop >> 1); address++)
+    printf("  0x%.4x (%d) : 0x%.2x%.2x\n", address << 1, address << 1, MEMORY[address][1], MEMORY[address][0]);
+  printf("\n");
+
+  /* dump the memory contents into the dumpsim file */
+  fprintf(dumpsim_file, "\nMemory content [0x%.4x..0x%.4x] :\n", start, stop);
+  fprintf(dumpsim_file, "-------------------------------------\n");
+  for (address = (start >> 1); address <= (stop >> 1); address++)
+    fprintf(dumpsim_file, " 0x%.4x (%d) : 0x%.2x%.2x\n", address << 1, address << 1, MEMORY[address][1], MEMORY[address][0]);
+  fprintf(dumpsim_file, "\n");
+  fflush(dumpsim_file);
+}
+
+/***************************************************************/
+/*                                                             */
+/* Procedure : rdump                                           */
+/*                                                             */
+/* Purpose   : Dump current register and bus values to the     */   
+/*             output file.                                    */
+/*                                                             */
+/***************************************************************/
+void rdump(FILE * dumpsim_file) {                               
+  int k; 
+
+  printf("\nCurrent register/bus values :\n");
+  printf("-------------------------------------\n");
+  printf("Instruction Count : %d\n", INSTRUCTION_COUNT);
+  printf("PC                : 0x%.4x\n", CURRENT_LATCHES.PC);
+  printf("CCs: N = %d  Z = %d  P = %d\n", CURRENT_LATCHES.N, CURRENT_LATCHES.Z, CURRENT_LATCHES.P);
+  printf("Registers:\n");
+  for (k = 0; k < LC_3b_REGS; k++)
+    printf("%d: 0x%.4x\n", k, CURRENT_LATCHES.REGS[k]);
+  printf("\n");
+
+  /* dump the state information into the dumpsim file */
+  fprintf(dumpsim_file, "\nCurrent register/bus values :\n");
+  fprintf(dumpsim_file, "-------------------------------------\n");
+  fprintf(dumpsim_file, "Instruction Count : %d\n", INSTRUCTION_COUNT);
+  fprintf(dumpsim_file, "PC                : 0x%.4x\n", CURRENT_LATCHES.PC);
+  fprintf(dumpsim_file, "CCs: N = %d  Z = %d  P = %d\n", CURRENT_LATCHES.N, CURRENT_LATCHES.Z, CURRENT_LATCHES.P);
+  fprintf(dumpsim_file, "Registers:\n");
+  for (k = 0; k < LC_3b_REGS; k++)
+    fprintf(dumpsim_file, "%d: 0x%.4x\n", k, CURRENT_LATCHES.REGS[k]);
+  fprintf(dumpsim_file, "\n");
+  fflush(dumpsim_file);
+}
+
+/***************************************************************/
+/*                                                             */
+/* Procedure : get_command                                     */
+/*                                                             */
+/* Purpose   : Read a command from standard input.             */  
+/*                                                             */
+/***************************************************************/
+void get_command(FILE * dumpsim_file) {                         
+  char buffer[20];
+  int start, stop, cycles;
+
+  printf("LC-3b-SIM> ");
+
+  scanf("%s", buffer);
+  printf("\n");
+
+  switch(buffer[0]) {
+  case 'G':
+  case 'g':
+    go();
+    break;
+
+  case 'M':
+  case 'm':
+    scanf("%i %i", &start, &stop);
+    mdump(dumpsim_file, start, stop);
+    break;
+
+  case '?':
+    help();
+    break;
+  case 'Q':
+  case 'q':
+    printf("Bye.\n");
+    exit(0);
+
+  case 'R':
+  case 'r':
+    if (buffer[1] == 'd' || buffer[1] == 'D')
+	    rdump(dumpsim_file);
+    else {
+	    scanf("%d", &cycles);
+	    run(cycles);
+    }
+    break;
+
+  default:
+    printf("Invalid Command\n");
+    break;
+  }
+}
+
+/***************************************************************/
+/*                                                             */
+/* Procedure : init_memory                                     */
+/*                                                             */
+/* Purpose   : Zero out the memory array                       */
+/*                                                             */
+/***************************************************************/
+void init_memory() {                                           
+  int i;
+
+  for (i=0; i < WORDS_IN_MEM; i++) {
+    MEMORY[i][0] = 0;
+    MEMORY[i][1] = 0;
+  }
+}
+
+/**************************************************************/
+/*                                                            */
+/* Procedure : load_program                                   */
+/*                                                            */
+/* Purpose   : Load program and service routines into mem.    */
+/*                                                            */
+/**************************************************************/
+void load_program(char *program_filename) {                   
+  FILE * prog;
+  int ii, word, program_base;
+
+  /* Open program file. */
+  prog = fopen(program_filename, "r");
+  if (prog == NULL) {
+    printf("Error: Can't open program file %s\n", program_filename);
+    exit(-1);
+  }
+
+  /* Read in the program. */
+  if (fscanf(prog, "%x\n", &word) != EOF)
+    program_base = word >> 1;
+  else {
+    printf("Error: Program file is empty\n");
+    exit(-1);
+  }
+
+  ii = 0;
+  while (fscanf(prog, "%x\n", &word) != EOF) {
+    /* Make sure it fits. */
+    if (program_base + ii >= WORDS_IN_MEM) {
+	    printf("Error: Program file %s is too long to fit in memory. %x\n",
+             program_filename, ii);
+	    exit(-1);
+    }
+
+    /* Write the word to memory array. */
+    MEMORY[program_base + ii][0] = word & 0x00FF;
+    MEMORY[program_base + ii][1] = (word >> 8) & 0x00FF;
+    ii++;
+  }
+
+  if (CURRENT_LATCHES.PC == 0) CURRENT_LATCHES.PC = (program_base << 1);
+
+  printf("Read %d words from program into memory.\n\n", ii);
+}
+
+/************************************************************/
+/*                                                          */
+/* Procedure : initialize                                   */
+/*                                                          */
+/* Purpose   : Load machine language program                */ 
+/*             and set up initial state of the machine.     */
+/*                                                          */
+/************************************************************/
+void initialize(char *files[], int num_prog_files) { 
+  int i;
+
+  init_memory();
+  for ( i = 0; i < num_prog_files; i++ ) {
+    load_program(files[i]);
+  }
+  CURRENT_LATCHES.Z = 1;  
+  NEXT_LATCHES = CURRENT_LATCHES;
+    
+  RUN_BIT = TRUE;
+}
+
+/***************************************************************/
+/*                                                             */
+/* Procedure : main                                            */
+/*                                                             */
+/***************************************************************/
+int main(int argc, char *argv[]) {                              
+  FILE * dumpsim_file;
+
+  /* Error Checking */
+  if (argc < 2) {
+    printf("Error: usage: %s <program_file_1> <program_file_2> ...\n",
+           argv[0]);
+    exit(1);
+  }
+
+  printf("LC-3b Simulator\n\n");
+
+  initialize(&argv[1], argc - 1);
+
+  if ( (dumpsim_file = fopen( "dumpsim", "w" )) == NULL ) {
+    printf("Error: Can't open dumpsim file\n");
+    exit(-1);
+  }
+
+  while (1)
+    get_command(dumpsim_file);
+    
+}
+
+/***************************************************************/
+/* Do not modify the above code.
+   You are allowed to use the following global variables in your
+   code. These are defined above.
+
+   MEMORY
+
+   CURRENT_LATCHES
+   NEXT_LATCHES
+
+   You may define your own local/global variables and functions.
+   You may use the functions to get at the control bits defined
+   above.
+
+   Begin your code here 	  			       */
+
+
+void process_instruction(){
+  /*  function: process_instruction
+   *  
+   *    Process one instruction at a time  
+   *       -Fetch one instruction
+   *       -Decode 
+   *       -Execute
+   *       -Update NEXT_LATCHES
+   * 
+   */     
+/*************************** Fetch/Decode ***************************
+ * Note: We need to RSHF Current PC by 1 to accomodate for memory -> Stored into memory by doing MEM[PC/2][x] = a. */
+    int msb = MEMORY[CURRENT_LATCHES.PC >> 1][1]; // Contants opcode + 4 bits of info
+    int lsb = MEMORY[CURRENT_LATCHES.PC >> 1][0]; // contains last 8 bits of info
+    int instruction = (msb & 0x00FF) << 8 | (lsb & 0x00FF);
+    int opcode = (msb & 0xF0) >> 4; // Shift 4 most signicant bits
+    int dr, sr1, sr2; // input/output registers
+    int drVal, sr1Val, sr2Val; //Values for IO registers
+    int pcOffset, n, z, p;
+    int imm5, effectiveAddress;
+ 
+/*************************** Increment PC ***************************/
+    CURRENT_LATCHES.PC += 2;
+
+/*************************** Set Next_Latches to Current_Latches ***************************/
+    NEXT_LATCHES = CURRENT_LATCHES;
+    // printf("Current PC: 0x%0.4x (%d)\n", NEXT_LATCHES.PC, NEXT_LATCHES.PC);
+    // printf("Current Instruction: 0x%0.4x\n", instruction);
+/*************************** Execute ***************************/
+    switch(opcode){
+        int checkSource; // Check to see if we have SR2 or IMM5
+        case 0b0001: // ADD
+            //decode
+            checkSource = (lsb & 0x20) >> 5; // Check bit 5 -> If 1, Immediate value. If 0, SR2.
+            dr = (instruction & 0xE00) >> 9; 
+            sr1 = (instruction & 0x1C0) >> 6;
+            sr1Val = (int16_t)NEXT_LATCHES.REGS[sr1];
+            Low16bits(sr1Val);
+            //execute
+            if(checkSource == 0) // check if bit A is set to see if its imm5 or SR2
+            {
+                sr2 = (instruction & 0x07);
+                sr2Val = (int16_t)NEXT_LATCHES.REGS[sr2];
+                Low16bits(sr2Val);
+                drVal = sr2Val + sr1Val;
+            }
+            else{
+                int imm5 = ((instruction & 0x001F));
+                if (imm5 & 0x0010) { // Check if the sign bit (bit 4) is set
+                  imm5 |= 0xFFE0; // Sign-extend to 16 bits
+                }
+                imm5 = (int16_t)imm5;
+                Low16bits(imm5);
+                drVal = sr1Val + (imm5);
+            }
+            // Set DRVal
+            drVal = Low16bits(drVal);
+            NEXT_LATCHES.REGS[dr] = drVal;
+            // printf("Expected Value: 0x%0.4x\nRegister Val: 0x%0.4x\n", drVal, NEXT_LATCHES.REGS[dr]);
+            NEXT_LATCHES.N = 0;
+            NEXT_LATCHES.Z = 0;
+            NEXT_LATCHES.P = 0;
+            //Set CCs
+            if((drVal & 0x8000) >> 15 != 1 && drVal != 0)
+            {
+                NEXT_LATCHES.P = 1;
+            }
+            else if (drVal == 0)
+            {
+                NEXT_LATCHES.Z = 1;
+            }
+            else
+            {
+                NEXT_LATCHES.N = 1;
+            }
+          break;
+
+        case 0b0101: // AND
+            //decode
+            checkSource = (lsb & 0x20) >> 5;
+            dr = (instruction & 0xE00) >> 9; 
+            sr1 = (instruction & 0x1C0) >> 6;
+            sr1Val = (int16_t)NEXT_LATCHES.REGS[sr1];
+            Low16bits(sr1Val);
+            //execute
+            if(checkSource == 0)
+            {
+                sr2 = (instruction & 0x07);
+                sr2Val = (int16_t)NEXT_LATCHES.REGS[sr2];
+                Low16bits(sr2Val);
+                drVal = sr2Val & sr1Val;
+            }
+            else{
+                imm5 = ((instruction & 0x1F) & 0x00FF); // Extend to 16 bits
+                if (imm5 & 0x0010) { // Check if the sign bit (bit 4) is set
+                  imm5 |= 0xFFE0; // Sign-extend to 16 bits
+                }
+                imm5 = (int16_t)imm5;
+                Low16bits(imm5);
+                drVal = sr1Val & imm5;
+            }
+            // Store DR
+            drVal = Low16bits(drVal);
+            NEXT_LATCHES.REGS[dr] = drVal;
+            // printf("Expected Value: 0x%0.4x\nRegister Val: 0x%0.4x\n", drVal, NEXT_LATCHES.REGS[dr]);
+            NEXT_LATCHES.N = 0;
+            NEXT_LATCHES.Z = 0;
+            NEXT_LATCHES.P = 0;
+            
+            //Set CCs
+            if((drVal & 0x8000) >> 15 != 1 && drVal != 0)
+            {
+                NEXT_LATCHES.P = 1;
+            }
+            else if (drVal == 0)
+            {
+                NEXT_LATCHES.Z = 1;
+            }
+            else
+            {
+                NEXT_LATCHES.N = 1;
+            }
+          break;
+
+        case 0b0000: // BR
+        // Doesn't matter which type it is. As long as we check the condition codes (i.e., nzp set in the instruction) and compare that to the current NZP CCs, we are good
+            pcOffset = (instruction & 0x1FF);
+            if (pcOffset & 0x0100) { // Check if the sign bit (bit 5) is set
+                pcOffset |= 0xFE00; // Sign-extend to 16 bits
+            }
+            pcOffset = Low16bits((int16_t)pcOffset);
+            n = (instruction & 0x800) >> 11; 
+            z = (instruction & 0x400) >> 10; 
+            p = (instruction & 0x200) >> 9; 
+            // Check Branch Condition
+            if((n & NEXT_LATCHES.N) | (p & NEXT_LATCHES.P) | (z & NEXT_LATCHES.Z))
+                {// Left shift because it needs to be a multiple of 2. The PC operates by incrementing by 2 (since its byte addressable)
+                NEXT_LATCHES.PC = Low16bits(NEXT_LATCHES.PC + ((pcOffset) << 1)); // Incremented PC, sign extend pcoffset, leftshift pcoffset by 1 bit.
+                }    
+          break;
+
+        case 0b1100: // JMP/RET
+        // Loads value of register specified into PC.
+            dr = (instruction & 0x01C0) >> 6; 
+            drVal = (NEXT_LATCHES.REGS[dr]);
+            NEXT_LATCHES.PC = Low16bits(drVal);
+          break;
+        
+        case 0b0100: // JSR/JSRR
+          // Store Incremented PC in R7
+            NEXT_LATCHES.REGS[7] = Low16bits(NEXT_LATCHES.PC);
+            // printf("Expected Value: 0x%0.4x\nRegister Val: 0x%0.4x\n", NEXT_LATCHES.PC, NEXT_LATCHES.REGS[7]);
+
+          // Register or offset:
+            int checkBit = (instruction & 0x0800) >> 11;          
+            if (checkBit == 0){
+              sr1 = (instruction & 0x01C0) >> 6;
+              sr1Val = NEXT_LATCHES.REGS[sr1];
+              NEXT_LATCHES.PC = Low16bits(sr1Val);
+              break;
+            }
+            else{
+              pcOffset = (instruction & 0x07FF); // 11 bit pcoffset -> 16 bit extension
+              if (pcOffset & 0x0400) { // Check if the sign bit (bit 8) is set
+                  pcOffset |= 0xF800; // Sign-extend to 16 bits
+              }
+              pcOffset = Low16bits(((int16_t)pcOffset) << 1); // LSFH to make it multiple of 2
+              NEXT_LATCHES.PC = Low16bits(NEXT_LATCHES.PC + pcOffset);
+            }
+          break;
+          
+        case 0b0010: // LDB
+            sr1 = (instruction & 0x01C0) >> 6; 
+            sr1Val = Low16bits((int16_t)NEXT_LATCHES.REGS[sr1]);
+            dr = (instruction & 0x0E00) >> 9;
+            pcOffset = (instruction & 0x003F);
+            if (pcOffset & 0x0020) { // Check if the sign bit (bit 5) is set
+                pcOffset |= 0xFFC0; // Sign-extend to 16 bits
+            }
+            pcOffset = Low16bits((int16_t)pcOffset);
+            effectiveAddress = Low16bits(pcOffset + sr1Val);
+            // If offset is even, we are getting LSB -> else we will get MSB
+            if(effectiveAddress % 2 == 0){
+              drVal = MEMORY[effectiveAddress / 2][0];
+              // printf("Memory Location: 0x%0.4x with values: 0x%0.4x%0.4x\n", effectiveAddress, MEMORY[effectiveAddress / 2][1], MEMORY[effectiveAddress / 2][0]);
+              // printf("DR Value: 0x%0.4x at 0x%0.4x\n", drVal, effectiveAddress);
+            }
+            else{
+              drVal = MEMORY[effectiveAddress / 2][1];
+              // printf("Memory Location: 0x%0.4x with values: 0x%0.4x%0.4x\n", effectiveAddress, MEMORY[effectiveAddress / 2][1], MEMORY[effectiveAddress / 2][0]);
+              // printf("DR Value: 0x%0.4x at 0x%0.4x\n", drVal, effectiveAddress);
+            }
+            // extend to 16 bits
+            drVal = Low16bits(drVal);
+            NEXT_LATCHES.REGS[dr] = drVal;
+            // printf("Expected Value: 0x%0.4x\nRegister Val: 0x%0.4x\n", drVal, NEXT_LATCHES.REGS[dr]);
+            //Set CCs
+            NEXT_LATCHES.N = 0;
+            NEXT_LATCHES.Z = 0;
+            NEXT_LATCHES.P = 0;
+            if((drVal & 0x8000) >> 15 != 1 && drVal != 0)
+            {
+                NEXT_LATCHES.P = 1;
+            }
+            else if (drVal == 0)
+            {
+                NEXT_LATCHES.Z = 1;
+            }
+            else
+            {
+                NEXT_LATCHES.N = 1;
+            }
+          break;
+        case 0b0110: // LDW
+            sr1 = (instruction & 0x01C0) >> 6; 
+            sr1Val = Low16bits((int16_t)NEXT_LATCHES.REGS[sr1]);
+            // printf("LDW Instruction\nSR Value: 0x%X\n", sr1Val);
+            dr = (instruction & 0x0E00) >> 9;
+            // Load Offset
+            pcOffset = (instruction & 0x003F) << 1;
+            if (pcOffset & 0x0020) { // Check if the sign bit (bit 5) is set
+                pcOffset |= 0xFFC0; // Sign-extend to 16 bits
+            }
+            pcOffset = Low16bits((int16_t)pcOffset);            
+            effectiveAddress = Low16bits(pcOffset + sr1Val);
+            // Load value from memory
+            drVal = MEMORY[effectiveAddress / 2][1] << 8 | MEMORY[effectiveAddress / 2][0];
+            // Limit to 16 bits
+            // printf("Destination Register: %i\n", dr);
+            drVal = Low16bits(drVal);
+            NEXT_LATCHES.REGS[dr] = drVal;
+            // printf("Expected Value: 0x%0.4x\nRegister Val: 0x%0.4x\n", drVal, NEXT_LATCHES.REGS[dr]);
+            //Set CCs
+            NEXT_LATCHES.N = 0;
+            NEXT_LATCHES.Z = 0;
+            NEXT_LATCHES.P = 0;
+            if((drVal & 0x8000) >> 15 != 1 && drVal != 0)
+            {
+                NEXT_LATCHES.P = 1;
+            }
+            else if (drVal == 0)
+            {
+                NEXT_LATCHES.Z = 1;
+            }
+            else
+            {
+                NEXT_LATCHES.N = 1;
+            }
+          break;
+         case 0b1110: // LEA
+            dr = (instruction & 0x0E00) >> 9;
+            // Load Offset
+            pcOffset = (instruction & 0x01FF) << 1;
+            if (pcOffset & 0x0100) { // Check if the sign bit (bit 5) is set
+                pcOffset |= 0xFFC0; // Sign-extend to 16 bits
+            }
+            pcOffset = Low16bits((int16_t)pcOffset);
+            // Place offset into DR
+            drVal = NEXT_LATCHES.PC + pcOffset;
+            NEXT_LATCHES.REGS[dr] = Low16bits(drVal);
+            // printf("Expected Value: 0x%0.4x\nRegister Val: 0x%0.4x\n", drVal, NEXT_LATCHES.REGS[dr]);
+            // printf("\nLEA Instruction\nOffset Val: 0x%X\nPC Val: 0x%X\nRegister Val: 0x%X\n\n", pcOffset, NEXT_LATCHES.PC, drVal);
+            break;
+        
+          case 0b1001: // NOT/XOR
+            dr = (instruction & 0x0E00) >> 9;
+            sr1 = (instruction & 0x01C0) >> 6; 
+            sr1Val = Low16bits((int16_t)NEXT_LATCHES.REGS[sr1]);
+
+            // Register or imm5
+            checkSource = (lsb & 0x20) >> 5;
+            if(checkSource == 0){
+              sr2 = (instruction & 0x07);
+              sr2Val = Low16bits((int16_t)NEXT_LATCHES.REGS[sr2]);
+              drVal = sr1Val ^ sr2Val;
+            }
+            else{
+              imm5 = (instruction & 0x001F);
+              if (imm5 & 0x0010) { // Check if the sign bit (bit 5) is set
+                  imm5 |= 0xFFE0; // Sign-extend to 16 bits
+              }
+              imm5 = Low16bits((int16_t)imm5);
+              drVal = sr1Val ^ imm5;
+            }
+
+            // Ensure only low 16 bits are taken
+            drVal = Low16bits(drVal);
+            NEXT_LATCHES.REGS[dr] = drVal;
+            // printf("Expected Value: 0x%0.4x\nRegister Val: 0x%0.4x\n", drVal, NEXT_LATCHES.REGS[dr]);
+
+            //Set CCs
+            NEXT_LATCHES.N = 0;
+            NEXT_LATCHES.Z = 0;
+            NEXT_LATCHES.P = 0;
+            if((drVal & 0x8000) >> 15 != 1 && drVal != 0)
+            {
+                NEXT_LATCHES.P = 1;
+            }
+            else if (drVal == 0)
+            {
+                NEXT_LATCHES.Z = 1;
+            }
+            else
+            {
+                NEXT_LATCHES.N = 1;
+            }
+            break;
+          case 0b1000: // RTI
+            break;
+
+          case 0b1101: // LSHF, RSHFL, RSHFA
+            dr = (instruction & 0x0E00) >> 9;
+            sr1 = (instruction & 0x01C0) >> 6; 
+            sr1Val = Low16bits((int16_t)NEXT_LATCHES.REGS[sr1]);
+            imm5 = (instruction & 0x000F); // only 4 bits, not 5
+            if (imm5 & 0x0010) { // Check if the sign bit (bit 4) is set
+                  imm5 |= 0xFFE0; // Sign-extend to 16 bits
+            }
+            imm5 = Low16bits((int16_t)imm5);
+            // Check bits 4 and 5
+            checkBit = (instruction & 0x0030) >> 4; 
+            if(checkBit == 0b00){ // Logical Shift Left
+              drVal = sr1Val << imm5;
+            }
+            else if(checkBit == 0b01){ // Logical Shift Right
+              drVal = (unsigned int) sr1Val >> imm5;
+            }
+            else if (checkBit == 0b11) { // Arithmetic Shift Right
+              if (sr1Val & 0x8000) { // If the sign bit is set
+                  drVal = (sr1Val >> imm5) | (0xFFFF << (16 - imm5));
+              } else {
+                  drVal = sr1Val >> imm5;
+              }
+            }
+            // Ensure only low 16 bits are taken
+            drVal = Low16bits(drVal);
+            NEXT_LATCHES.REGS[dr] = drVal;
+            // printf("Expected Value: 0x%0.4x\nRegister Val: 0x%0.4x\n", drVal, NEXT_LATCHES.REGS[dr]);
+
+            //Set CCs
+            NEXT_LATCHES.N = 0;
+            NEXT_LATCHES.Z = 0;
+            NEXT_LATCHES.P = 0;
+            if((drVal & 0x8000) >> 15 != 1 && drVal != 0)
+            {
+                NEXT_LATCHES.P = 1;
+            }
+            else if (drVal == 0)
+            {
+                NEXT_LATCHES.Z = 1;
+            }
+            else
+            {
+                NEXT_LATCHES.N = 1;
+            }
+            break;
+          case 0b0011: // STB
+            // printf("\nCurrent Instruction: 0x%X\n", instruction);
+            sr1 = (instruction & 0x0E00) >> 9; 
+            sr1Val = Low16bits((int16_t)(NEXT_LATCHES.REGS[sr1] & 0x00FF)); // Just want low 8 bits
+            sr2 = (instruction & 0x01C0) >> 6; 
+            sr2Val = Low16bits((int16_t)NEXT_LATCHES.REGS[sr2]);
+            
+            pcOffset = (instruction & 0x003F);
+            if (pcOffset & 0x0020) { // Check if the sign bit (bit 5) is set
+                pcOffset |= 0xFFC0; // Sign-extend to 16 bits
+            }
+            pcOffset = Low16bits((int16_t)pcOffset);
+            effectiveAddress = Low16bits(pcOffset + sr2Val);
+            // printf("\nInstruction STB\nCurrent PC: 0x%X\n", NEXT_LATCHES.PC);
+            // printf("SR1 Val: 0x%X\nSR2 Value: 0x%X\npcOffset: 0x%X", sr1Val, sr2Val, pcOffset);
+            // If offset is even, we are getting LSB -> else we will get MSB
+            if(effectiveAddress % 2 == 0){
+              MEMORY[effectiveAddress / 2][0] = (sr1Val & 0x00FF);
+              // printf("Memory Location: 0x%0.4x with values: 0x%0.4x%0.4x\n", (effectiveAddress / 2), MEMORY[effectiveAddress / 2][1], MEMORY[effectiveAddress / 2][0]);
+
+            }
+            else{
+              MEMORY[effectiveAddress / 2][1] = (sr1Val & 0x00FF);
+              // printf("Memory Location: 0x%0.4x with values: 0x%0.4x%0.4x\n", (effectiveAddress / 2), MEMORY[effectiveAddress / 2][1], MEMORY[effectiveAddress / 2][0]);
+            }
+            break;
+          case 0b0111: // STW
+            // Source Register
+            sr1 = (instruction & 0x0E00) >> 9; // Value we want to store
+            sr1Val = Low16bits((int16_t)(NEXT_LATCHES.REGS[sr1]));
+            // Base Register
+            sr2 = (instruction & 0x01C0) >> 6; 
+            sr2Val = Low16bits((int16_t)NEXT_LATCHES.REGS[sr2]);
+            // Check for illegal address access
+            if((sr2Val % 2)){
+              // printf("Illegal Operand Address Exception. Base Register contains odd address: %i. \n", sr2Val);
+              break;
+            }// 
+            
+            pcOffset = (instruction & 0x003F);
+            if (pcOffset & 0x0020) { // Check if the sign bit (bit 5) is set
+                pcOffset |= 0xFFC0; // Sign-extend to 16 bits
+            }
+            pcOffset = Low16bits((int16_t)pcOffset);
+            effectiveAddress = Low16bits((pcOffset + sr2Val));
+
+            MEMORY[effectiveAddress / 2][0] = (sr1Val & 0x00FF);
+            MEMORY[effectiveAddress / 2][1] = (sr1Val & 0xFF00) >> 8;
+            // printf("Memory Value (MSB): 0x%0.4x\nMemory Value (LSB): 0x%0.4x\n", MEMORY[effectiveAddress][1], MEMORY[effectiveAddress][0]);
+            // printf("Memory Location: 0x%0.4x with values: 0x%0.4x%0.4x\n", effectiveAddress, MEMORY[effectiveAddress][1], MEMORY[effectiveAddress][0]);
+            break;
+
+          case 0b1111: // TRAP
+            NEXT_LATCHES.REGS[7] = NEXT_LATCHES.PC;
+            pcOffset = (instruction & 0x00FF) >> 1;
+            NEXT_LATCHES.PC = MEMORY[pcOffset][1] << 8 | MEMORY[pcOffset][0];
+            break;
+  };
+}
